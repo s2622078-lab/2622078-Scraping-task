@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 START_URL = "https://www.musashino-u.ac.jp/"
 DOMAIN = "www.musashino-u.ac.jp"
 OUTPUT_CSV = "musashino_u_sitemap.csv"
-SLEEP_SEC = 1.0 
+SLEEP_SEC = 1.0
 TIMEOUT = 20
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; sitemap-checker/1.0)"}
 
@@ -26,10 +26,9 @@ SKIP_EXTENSIONS = (
 def normalize_url(url):
     """URL を比較しやすい形にそろえる（フラグメント除去・https 固定など）."""
     parts = urlsplit(url)
-    scheme = "https"  # http と https の重複を防ぐ
+    scheme = "https"
     netloc = parts.netloc.lower()
     path = parts.path or "/"
-    # 迷い込むだけのページネーション系クエリは残しつつ，utm_* は落とす
     query = "&".join(
         q for q in parts.query.split("&") if q and not q.startswith("utm_")
     )
@@ -49,11 +48,8 @@ def is_target_link(url):
 
 
 def fetch_title(session, url, sleep_sec=SLEEP_SEC):
-    """1ページ取得して (title, 同一ドメインのリンク一覧) を返す.
-
-    取得できなかった場合は (None, []) を返す。
-    """
-    time.sleep(sleep_sec)  # アクセス前に必ず待機して負荷を軽減
+    """1ページ取得して (title, 同一ドメインのリンク一覧) を返す."""
+    time.sleep(sleep_sec)
     try:
         res = session.get(url, timeout=TIMEOUT, headers=HEADERS)
     except requests.RequestException as exc:
@@ -64,10 +60,14 @@ def fetch_title(session, url, sleep_sec=SLEEP_SEC):
         print(f"[WARN] {url} : HTTP {res.status_code}", file=sys.stderr)
         return None, []
 
-    if "html" not in res.headers.get("Content-Type", ""):
+    # Content-Type チェック
+    content_type = res.headers.get("Content-Type", "")
+    if "text/html" not in content_type and "application/xhtml+xml" not in content_type:
         return None, []
 
-    soup = BeautifulSoup(res.content, "html.parser")
+    # 文字化け対策
+    res.encoding = res.apparent_encoding or res.encoding
+    soup = BeautifulSoup(res.text, "html.parser")
 
     title_tag = soup.find("title")
     title = title_tag.get_text(strip=True) if title_tag else ""
@@ -89,14 +89,16 @@ def crawl(max_pages=None, sleep_sec=SLEEP_SEC):
     session = requests.Session()
     session.headers.update(HEADERS)
 
-    sitemap = {}                    # key: URL, value: <title> の文字列
-    visited = set()                 # 取得を試みた URL
-    queue = deque([normalize_url(START_URL)])
+    sitemap = {}
+    visited = set()
+    enqueued = set()
+
+    start_url = normalize_url(START_URL)
+    queue = deque([start_url])
+    enqueued.add(start_url)
 
     while queue:
         url = queue.popleft()
-        if url in visited:
-            continue
         visited.add(url)
 
         title, links = fetch_title(session, url, sleep_sec)
@@ -107,7 +109,9 @@ def crawl(max_pages=None, sleep_sec=SLEEP_SEC):
         print(f"[{len(sitemap):>5}] {title} | {url}")
 
         for link in links:
-            if link not in visited:
+            # キューへの追加時にも重複チェックを入れて膨張を防ぐ
+            if link not in visited and link not in enqueued:
+                enqueued.add(link)
                 queue.append(link)
 
         if max_pages is not None and len(sitemap) >= max_pages:
